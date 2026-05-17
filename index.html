@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>端点管理</title>
+    <style>
+      html,
+      body,
+      #app {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        overflow-x: hidden;
+      }
+
+      html.extension-popup-mode,
+      html.extension-popup-mode body,
+      html.extension-popup-mode #app {
+        width: 600px;
+        min-width: 600px;
+        min-height: 600px;
+      }
+
+      html.standalone-mode,
+      html.standalone-mode body,
+      html.standalone-mode #app {
+        width: 100%;
+        min-width: 0;
+        min-height: 100vh;
+      }
+
+      body {
+        overflow-y: auto;
+        background: #f8f9fa;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

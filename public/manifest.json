@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "AI 大模型端点管理",
+  "version": "1.0.0",
+  "description": "管理 OpenAI API 端点、密钥、模型和中转站签到任务",
+  "action": {
+    "default_popup": "index.html"
+  },
+  "permissions": [
+    "storage",
+    "clipboardWrite",
+    "tabs",
+    "windows"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "icons": {
+    "128": "icon.png"
+  }
+}
