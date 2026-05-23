@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { usePreferredDark } from '@vueuse/core'
 import { VIEW_MODE_POPUP, VIEW_MODE_STANDALONE, getInitialViewMode } from '../utils/viewMode'
 
@@ -9,7 +9,10 @@ const CHECKIN_CATEGORIES_KEY = 'checkinCategoriesData'
 const ENDPOINT_DRAFT_KEY = 'formDraft'
 const CHECKIN_DRAFT_KEY = 'checkinFormDraft'
 const APP_SETTINGS_KEY = 'appSettings'
+const POPUP_BROWSING_STATE_KEY = 'popupBrowsingState'
 const CHECKIN_TIMEOUT_MS = 30000
+const POPUP_BROWSING_MAX_AGE_MS = 3 * 60 * 1000
+const POPUP_SCROLL_SAVE_DELAY_MS = 120
 
 const CATEGORY_ALL = '__all__'
 const CATEGORY_NONE = '__none__'
@@ -77,6 +80,7 @@ const buildCheckinBatchProgress = () => ({
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const normalizeCategory = (value) => String(value || '').trim()
 const normalizeThemePreference = (value) => [THEME_LIGHT, THEME_DARK, THEME_SYSTEM].includes(value) ? value : THEME_SYSTEM
+const normalizeActiveTab = (value) => ['endpoints', 'checkin', 'settings'].includes(value) ? value : 'endpoints'
 
 const mergeCategories = (...lists) => {
   const set = new Set()
@@ -229,6 +233,37 @@ const storageRemove = (keys) => new Promise((resolve) => {
   keys.forEach((key) => localStorage.removeItem(key))
   resolve()
 })
+
+const readPopupBrowsingState = () => {
+  try {
+    const raw = localStorage.getItem(POPUP_BROWSING_STATE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    const savedAt = Number(parsed?.savedAt)
+    const scrollTop = Number(parsed?.scrollTop)
+    return {
+      activeTab: normalizeActiveTab(parsed?.activeTab),
+      savedAt: Number.isFinite(savedAt) ? savedAt : 0,
+      scrollTop: Number.isFinite(scrollTop) ? Math.max(0, Math.trunc(scrollTop)) : 0
+    }
+  } catch (error) {
+    console.error('读取小窗浏览状态失败:', error)
+    return null
+  }
+}
+
+const writePopupBrowsingState = (value) => {
+  try {
+    if (!value) {
+      localStorage.removeItem(POPUP_BROWSING_STATE_KEY)
+      return
+    }
+
+    localStorage.setItem(POPUP_BROWSING_STATE_KEY, JSON.stringify(value))
+  } catch (error) {
+    console.error('保存小窗浏览状态失败:', error)
+  }
+}
 
 const parseHeaders = (headersText = '') => {
   const text = headersText.trim()
@@ -674,6 +709,8 @@ export function useManagerState() {
   const checkinProgressHideTimers = new Map()
   const checkinCompletionTimers = new Map()
   let batchProgressHideTimer = null
+  let popupBrowsingStateSaveTimer = null
+  let popupBrowsingStateRestoring = false
   let toastSeed = 0
 
   const buildConfirmState = () => ({
@@ -749,6 +786,68 @@ export function useManagerState() {
 
   const syncViewportMode = () => {
     isPopup.value = viewMode === VIEW_MODE_POPUP
+  }
+
+  const clearPopupBrowsingStateSaveTimer = () => {
+    if (!popupBrowsingStateSaveTimer) return
+    window.clearTimeout(popupBrowsingStateSaveTimer)
+    popupBrowsingStateSaveTimer = null
+  }
+
+  const getPopupScrollTop = () => Math.max(
+    window.scrollY || 0,
+    document.documentElement?.scrollTop || 0,
+    document.body?.scrollTop || 0
+  )
+
+  const buildPopupBrowsingState = () => ({
+    activeTab: normalizeActiveTab(activeTab.value),
+    savedAt: Date.now(),
+    scrollTop: getPopupScrollTop()
+  })
+
+  const persistPopupBrowsingState = () => {
+    if (!isPopup.value || popupBrowsingStateRestoring) return
+    writePopupBrowsingState(buildPopupBrowsingState())
+  }
+
+  const schedulePopupBrowsingStateSave = () => {
+    if (!isPopup.value || popupBrowsingStateRestoring) return
+
+    clearPopupBrowsingStateSaveTimer()
+    popupBrowsingStateSaveTimer = window.setTimeout(() => {
+      popupBrowsingStateSaveTimer = null
+      persistPopupBrowsingState()
+    }, POPUP_SCROLL_SAVE_DELAY_MS)
+  }
+
+  const restorePopupBrowsingState = async () => {
+    if (!isPopup.value) return
+
+    const savedState = readPopupBrowsingState()
+    if (!savedState) return
+
+    if (!savedState.savedAt || Date.now() - savedState.savedAt > POPUP_BROWSING_MAX_AGE_MS) {
+      writePopupBrowsingState(null)
+      return
+    }
+
+    popupBrowsingStateRestoring = true
+    activeTab.value = savedState.activeTab
+    await nextTick()
+
+    await new Promise((resolve) => {
+      const applyScroll = () => window.scrollTo({ top: savedState.scrollTop, behavior: 'auto' })
+      window.requestAnimationFrame(() => {
+        applyScroll()
+        window.requestAnimationFrame(() => {
+          applyScroll()
+          popupBrowsingStateRestoring = false
+          persistPopupBrowsingState()
+          resolve()
+        })
+      })
+    })
   }
 
   const applyThemeToDocument = () => {
@@ -1944,6 +2043,10 @@ export function useManagerState() {
     selectedCheckinSiteIds.value = selectedCheckinSiteIds.value.filter((id) => validIds.has(id))
   }, { deep: true })
 
+  watch(activeTab, () => {
+    persistPopupBrowsingState()
+  })
+
   onMounted(async () => {
     syncViewportMode()
 
@@ -1987,6 +2090,13 @@ export function useManagerState() {
       checkinDialogType.value = checkinDraft.dialogType || 'add'
       checkinDialogVisible.value = true
     }
+
+    if (isPopup.value) {
+      window.addEventListener('scroll', schedulePopupBrowsingStateSave, { passive: true })
+      window.addEventListener('pagehide', persistPopupBrowsingState)
+      document.addEventListener('visibilitychange', persistPopupBrowsingState)
+      await restorePopupBrowsingState()
+    }
   })
 
   onBeforeUnmount(() => {
@@ -1995,6 +2105,11 @@ export function useManagerState() {
     checkinProgressHideTimers.forEach((timer) => window.clearTimeout(timer))
     checkinCompletionTimers.forEach((timer) => window.clearTimeout(timer))
     if (batchProgressHideTimer) window.clearTimeout(batchProgressHideTimer)
+    clearPopupBrowsingStateSaveTimer()
+    persistPopupBrowsingState()
+    window.removeEventListener('scroll', schedulePopupBrowsingStateSave)
+    window.removeEventListener('pagehide', persistPopupBrowsingState)
+    document.removeEventListener('visibilitychange', persistPopupBrowsingState)
   })
 
   return {
